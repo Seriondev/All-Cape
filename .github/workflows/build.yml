@@ -1,0 +1,924 @@
+# ============================================================
+# TEAM CAPE - mod Fabric 1.21.11 (cape custom dari gambar sendiri)
+# Cara pakai: simpan file ini sebagai  .github/workflows/build.yml
+# di repo GitHub kamu (repo kosong pun bisa), lalu tunggu Actions
+# selesai. Hasil .jar ada di tab Releases.
+#
+# WAJIB: semua anggota tim harus pakai build yang SAMA (TEAM_TOPIC sama).
+# Boleh ganti TEAM_TOPIC di bawah (8-64 huruf/angka/_/-) sebelum build.
+# Anggap TEAM_TOPIC itu seperti password tim: jangan dibagi ke orang luar.
+# ============================================================
+name: Build TeamCape
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  TEAM_TOPIC: teamcape-7d28b966932f
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.2.1'
+
+      - name: Generate project files
+        run: |
+          set -e
+          mkdir -p . src/main/java/com/teamcape src/main/java/com/teamcape/mixin src/main/resources
+          cat > settings.gradle <<'EOF_0'
+          pluginManagement {
+              repositories {
+                  maven {
+                      name = 'Fabric'
+                      url = 'https://maven.fabricmc.net/'
+                  }
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          rootProject.name = 'teamcape'
+          EOF_0
+          cat > gradle.properties <<'EOF_1'
+          org.gradle.jvmargs=-Xmx2G
+          org.gradle.parallel=true
+
+          minecraft_version=1.21.11
+          yarn_mappings=1.21.11+build.4
+          loader_version=0.18.4
+          fabric_version=0.141.3+1.21.11
+
+          mod_version=1.0.0
+          maven_group=com.teamcape
+          archives_base_name=teamcape
+          EOF_1
+          cat > build.gradle <<'EOF_2'
+          plugins {
+              id 'fabric-loom' version '1.14-SNAPSHOT'
+          }
+
+          version = project.mod_version
+          group = project.maven_group
+
+          base {
+              archivesName = project.archives_base_name
+          }
+
+          dependencies {
+              minecraft "com.mojang:minecraft:${project.minecraft_version}"
+              mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+              modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+              modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+          }
+
+          processResources {
+              inputs.property "version", project.version
+              filesMatching("fabric.mod.json") {
+                  expand "version": inputs.properties.version
+              }
+          }
+
+          tasks.withType(JavaCompile).configureEach {
+              it.options.release = 21
+          }
+
+          java {
+              sourceCompatibility = JavaVersion.VERSION_21
+              targetCompatibility = JavaVersion.VERSION_21
+          }
+          EOF_2
+          cat > src/main/resources/fabric.mod.json <<'EOF_3'
+          {
+            "schemaVersion": 1,
+            "id": "teamcape",
+            "version": "${version}",
+            "name": "Team Cape",
+            "description": "Cape custom dari gambar sendiri, kelihatan oleh sesama pemakai mod (termasuk di server).",
+            "authors": ["Team"],
+            "license": "MIT",
+            "environment": "client",
+            "entrypoints": {
+              "client": ["com.teamcape.TeamCapeMod"]
+            },
+            "mixins": ["teamcape.mixins.json"],
+            "depends": {
+              "fabricloader": ">=0.17.3",
+              "minecraft": "~1.21.11",
+              "java": ">=21",
+              "fabric-api": "*"
+            }
+          }
+          EOF_3
+          cat > src/main/resources/teamcape.mixins.json <<'EOF_4'
+          {
+            "required": true,
+            "minVersion": "0.8",
+            "package": "com.teamcape.mixin",
+            "compatibilityLevel": "JAVA_21",
+            "client": [
+              "AbstractClientPlayerEntityMixin"
+            ],
+            "injectors": {
+              "defaultRequire": 1
+            }
+          }
+          EOF_4
+          cat > src/main/java/com/teamcape/TeamCapeMod.java <<'EOF_5'
+          package com.teamcape;
+
+          import com.mojang.brigadier.context.CommandContext;
+          import net.fabricmc.api.ClientModInitializer;
+          import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
+          import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
+          import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
+          import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+          import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
+          import net.minecraft.text.Text;
+          import org.slf4j.Logger;
+          import org.slf4j.LoggerFactory;
+
+          import java.util.Map;
+
+          public class TeamCapeMod implements ClientModInitializer {
+              public static final String MOD_ID = "teamcape";
+              public static final Logger LOG = LoggerFactory.getLogger(MOD_ID);
+              // diganti otomatis oleh build.yml (TEAM_TOPIC)
+              public static final String DEFAULT_TOPIC = "__TEAM_TOPIC__";
+
+              private static int tickCounter = 0;
+
+              @Override
+              public void onInitializeClient() {
+                  CapeFiles.ensure();
+                  CapeConfig.load();
+                  CapeFiles.refresh();
+                  CapeSync.start();
+
+                  ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
+                      dispatcher.register(ClientCommandManager.literal("cape")
+                          .executes(ctx -> status(ctx))
+                          .then(ClientCommandManager.literal("on").executes(ctx -> {
+                              CapeConfig.enabled = true;
+                              CapeConfig.save();
+                              CapeSync.publishNow();
+                              say(ctx, "Cape kamu: ON");
+                              return 1;
+                          }))
+                          .then(ClientCommandManager.literal("off").executes(ctx -> {
+                              CapeConfig.enabled = false;
+                              CapeConfig.save();
+                              CapeSync.publishNow();
+                              say(ctx, "Cape kamu: OFF");
+                              return 1;
+                          }))
+                          .then(ClientCommandManager.literal("others")
+                              .then(ClientCommandManager.literal("on").executes(ctx -> {
+                                  CapeConfig.showOthers = true;
+                                  CapeConfig.save();
+                                  say(ctx, "Lihat cape teman: ON");
+                                  return 1;
+                              }))
+                              .then(ClientCommandManager.literal("off").executes(ctx -> {
+                                  CapeConfig.showOthers = false;
+                                  CapeConfig.save();
+                                  say(ctx, "Lihat cape teman: OFF");
+                                  return 1;
+                              })))
+                          .then(ClientCommandManager.literal("reload").executes(ctx -> {
+                              CapeFiles.refresh();
+                              CapeSync.publishNow();
+                              say(ctx, "Folder cape di-scan ulang: " + CapeFiles.list().size() + " gambar");
+                              return 1;
+                          }))
+                          .then(ClientCommandManager.literal("who").executes(ctx -> {
+                              Map<String, String> m = CapeSync.snapshot();
+                              if (m.isEmpty()) {
+                                  say(ctx, "Belum ada teman yang terdeteksi (tunggu ~30 detik, pastikan topic sama).");
+                              }
+                              for (Map.Entry<String, String> e : m.entrySet()) {
+                                  String c = e.getValue();
+                                  String extra = "-".equals(c) ? "(cape off)" : (CapeFiles.actual(c) == null ? "(file TIDAK ada di folder kamu)" : "");
+                                  say(ctx, e.getKey() + " -> " + c + " " + extra);
+                              }
+                              return 1;
+                          })));
+
+                      dispatcher.register(ClientCommandManager.literal("capemenu").executes(ctx -> {
+                          CapeMenuScreen.openRequested = true;
+                          return 1;
+                      }));
+                  });
+
+                  ClientTickEvents.END_CLIENT_TICK.register(client -> {
+                      if (CapeMenuScreen.openRequested) {
+                          CapeMenuScreen.openRequested = false;
+                          client.setScreen(new CapeMenuScreen(null));
+                      }
+                      tickCounter++;
+                      if (tickCounter % 100 == 0) {
+                          CapeFiles.refresh();
+                      }
+                      if (client.player != null && tickCounter % 20 == 0) {
+                          CapeSync.selfName = client.player.getName().getString();
+                      }
+                  });
+
+                  ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> CapeSync.publishNow());
+              }
+
+              private static int status(CommandContext<FabricClientCommandSource> ctx) {
+                  String sel = CapeConfig.selected == null || CapeConfig.selected.isEmpty() ? "(belum dipilih)" : CapeConfig.selected;
+                  say(ctx, "Cape kamu: " + (CapeConfig.enabled ? "ON" : "OFF") + " | file: " + sel);
+                  say(ctx, "Lihat cape teman: " + (CapeConfig.showOthers ? "ON" : "OFF") + " | /capemenu, /cape on|off, /cape who, /cape reload");
+                  return 1;
+              }
+
+              private static void say(CommandContext<FabricClientCommandSource> ctx, String msg) {
+                  ctx.getSource().sendFeedback(Text.literal("[Cape] " + msg));
+              }
+          }
+          EOF_5
+          cat > src/main/java/com/teamcape/CapeConfig.java <<'EOF_6'
+          package com.teamcape;
+
+          import com.google.gson.Gson;
+          import com.google.gson.GsonBuilder;
+
+          import java.nio.file.Files;
+          import java.nio.file.Path;
+
+          public final class CapeConfig {
+              private CapeConfig() {}
+
+              private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+
+              public static volatile boolean enabled = true;
+              public static volatile boolean showOthers = true;
+              public static volatile String selected = "";
+
+              private static final class Data {
+                  boolean enabled = true;
+                  boolean showOthers = true;
+                  String selected = "";
+                  // opsional: isi manual di config.json kalau mau override
+                  String topic = null;
+                  String server = null;
+              }
+
+              private static Data data = new Data();
+
+              public static Path file() {
+                  return CapeFiles.root().resolve("config.json");
+              }
+
+              public static String topic() {
+                  String t = data.topic;
+                  return (t != null && !t.isBlank()) ? t.trim() : TeamCapeMod.DEFAULT_TOPIC;
+              }
+
+              public static String server() {
+                  String s = data.server;
+                  String v = (s != null && !s.isBlank()) ? s.trim() : "https://ntfy.sh";
+                  while (v.endsWith("/")) v = v.substring(0, v.length() - 1);
+                  return v;
+              }
+
+              public static void load() {
+                  try {
+                      Path f = file();
+                      if (Files.exists(f)) {
+                          Data d = GSON.fromJson(Files.readString(f), Data.class);
+                          if (d != null) {
+                              data = d;
+                              enabled = d.enabled;
+                              showOthers = d.showOthers;
+                              selected = d.selected == null ? "" : d.selected;
+                          }
+                      }
+                  } catch (Exception e) {
+                      TeamCapeMod.LOG.warn("Gagal baca config", e);
+                  }
+                  save();
+              }
+
+              public static synchronized void save() {
+                  try {
+                      data.enabled = enabled;
+                      data.showOthers = showOthers;
+                      data.selected = selected == null ? "" : selected;
+                      Files.createDirectories(CapeFiles.root());
+                      Files.writeString(file(), GSON.toJson(data));
+                  } catch (Exception e) {
+                      TeamCapeMod.LOG.warn("Gagal simpan config", e);
+                  }
+              }
+          }
+          EOF_6
+          cat > src/main/java/com/teamcape/CapeFiles.java <<'EOF_7'
+          package com.teamcape;
+
+          import net.fabricmc.loader.api.FabricLoader;
+
+          import java.io.IOException;
+          import java.nio.file.Files;
+          import java.nio.file.Path;
+          import java.util.ArrayList;
+          import java.util.Collections;
+          import java.util.HashMap;
+          import java.util.List;
+          import java.util.Locale;
+          import java.util.Map;
+          import java.util.stream.Stream;
+
+          public final class CapeFiles {
+              private CapeFiles() {}
+
+              private static volatile Map<String, String> index = new HashMap<>();
+              private static volatile List<String> names = new ArrayList<>();
+
+              public static Path root() {
+                  return FabricLoader.getInstance().getGameDir().resolve("teamcape");
+              }
+
+              public static Path dir() {
+                  return root().resolve("capes");
+              }
+
+              public static void ensure() {
+                  try {
+                      Files.createDirectories(dir());
+                  } catch (IOException e) {
+                      TeamCapeMod.LOG.warn("Gagal bikin folder cape", e);
+                  }
+              }
+
+              public static boolean safeName(String n) {
+                  if (n == null || n.isEmpty() || n.length() > 80) return false;
+                  if (n.indexOf('/') >= 0 || n.indexOf('\\') >= 0 || n.contains("..")) return false;
+                  return n.toLowerCase(Locale.ROOT).endsWith(".png");
+              }
+
+              public static void refresh() {
+                  List<String> out = new ArrayList<>();
+                  try (Stream<Path> s = Files.list(dir())) {
+                      s.filter(Files::isRegularFile)
+                          .map(p -> p.getFileName().toString())
+                          .filter(CapeFiles::safeName)
+                          .forEach(out::add);
+                  } catch (IOException ignored) {
+                  }
+                  out.sort(String.CASE_INSENSITIVE_ORDER);
+                  Map<String, String> idx = new HashMap<>();
+                  for (String n : out) idx.put(n.toLowerCase(Locale.ROOT), n);
+                  index = idx;
+                  names = out;
+              }
+
+              public static List<String> list() {
+                  return Collections.unmodifiableList(new ArrayList<>(names));
+              }
+
+              /** Cari nama file asli (tidak peka huruf besar/kecil). null kalau tidak ada. */
+              public static String actual(String wanted) {
+                  if (wanted == null) return null;
+                  return index.get(wanted.toLowerCase(Locale.ROOT));
+              }
+          }
+          EOF_7
+          cat > src/main/java/com/teamcape/CapeTextures.java <<'EOF_8'
+          package com.teamcape;
+
+          import net.minecraft.client.MinecraftClient;
+          import net.minecraft.client.texture.NativeImage;
+          import net.minecraft.client.texture.NativeImageBackedTexture;
+          import net.minecraft.util.AssetInfo;
+          import net.minecraft.util.Identifier;
+
+          import java.io.InputStream;
+          import java.nio.file.Files;
+          import java.nio.file.Path;
+          import java.util.HashMap;
+          import java.util.Locale;
+          import java.util.Map;
+
+          public final class CapeTextures {
+              private CapeTextures() {}
+
+              public static final class Entry {
+                  public final Identifier id;
+                  public final int width;
+                  public final int height;
+                  public final boolean valid;
+                  public final String problem;
+                  public final AssetInfo.TextureAssetInfo asset;
+                  long modified;
+                  long checkedAt;
+
+                  Entry(Identifier id, int width, int height, boolean valid, String problem, long modified) {
+                      this.id = id;
+                      this.width = width;
+                      this.height = height;
+                      this.valid = valid;
+                      this.problem = problem;
+                      this.modified = modified;
+                      this.asset = (valid && id != null) ? new AssetInfo.TextureAssetInfo(id, id) : null;
+                  }
+              }
+
+              private static final Map<String, Entry> CACHE = new HashMap<>();
+
+              /** Ambil (dan load kalau perlu) texture cape. Harus dipanggil dari thread game/render. */
+              public static synchronized Entry get(String wanted) {
+                  String actual = CapeFiles.actual(wanted);
+                  if (actual == null) return null;
+                  MinecraftClient mc = MinecraftClient.getInstance();
+                  long now = System.currentTimeMillis();
+                  Entry e = CACHE.get(actual);
+                  if (e != null && now - e.checkedAt < 3000) return e;
+                  if (!mc.isOnThread()) return e;
+
+                  Path p = CapeFiles.dir().resolve(actual);
+                  long mod;
+                  try {
+                      mod = Files.getLastModifiedTime(p).toMillis();
+                  } catch (Exception ex) {
+                      return e;
+                  }
+                  if (e != null && e.modified == mod) {
+                      e.checkedAt = now;
+                      return e;
+                  }
+                  if (e != null && e.id != null) {
+                      try {
+                          mc.getTextureManager().destroyTexture(e.id);
+                      } catch (Throwable ignored) {
+                      }
+                  }
+                  Entry n = load(actual, p, mod, mc);
+                  n.checkedAt = now;
+                  CACHE.put(actual, n);
+                  return n;
+              }
+
+              private static Entry bad(long mod, String why) {
+                  return new Entry(null, 0, 0, false, why, mod);
+              }
+
+              private static Entry load(String name, Path p, long mod, MinecraftClient mc) {
+                  try {
+                      if (Files.size(p) > 16L * 1024 * 1024) return bad(mod, "file lebih dari 16MB");
+                      NativeImage img;
+                      try (InputStream in = Files.newInputStream(p)) {
+                          img = NativeImage.read(in);
+                      }
+                      int w = img.getWidth();
+                      int h = img.getHeight();
+                      if (w < 64 || w % 64 != 0 || h * 2 != w) {
+                          img.close();
+                          return bad(mod, "ukuran " + w + "x" + h + " salah (harus 2:1, kelipatan 64x32)");
+                      }
+                      if (w > 4096) {
+                          img.close();
+                          return bad(mod, "terlalu besar (maks 4096x2048)");
+                      }
+                      Identifier id = Identifier.of(TeamCapeMod.MOD_ID,
+                          "cape/" + Long.toHexString(name.toLowerCase(Locale.ROOT).hashCode() & 0xffffffffL) + "_" + Long.toHexString(mod));
+                      NativeImageBackedTexture tex = new NativeImageBackedTexture(() -> "teamcape/" + name, img);
+                      try {
+                          tex.setFilter(true, false);
+                      } catch (Throwable ignored) {
+                      }
+                      mc.getTextureManager().registerTexture(id, tex);
+                      return new Entry(id, w, h, true, "", mod);
+                  } catch (Throwable t) {
+                      TeamCapeMod.LOG.warn("Gagal load cape " + name, t);
+                      return bad(mod, "gagal dibaca (PNG rusak?)");
+                  }
+              }
+          }
+          EOF_8
+          cat > src/main/java/com/teamcape/CapeSync.java <<'EOF_9'
+          package com.teamcape;
+
+          import com.google.gson.JsonObject;
+          import com.google.gson.JsonParser;
+          import net.minecraft.client.MinecraftClient;
+
+          import java.io.BufferedReader;
+          import java.io.InputStream;
+          import java.io.InputStreamReader;
+          import java.io.OutputStream;
+          import java.net.HttpURLConnection;
+          import java.net.URI;
+          import java.nio.charset.StandardCharsets;
+          import java.util.HashMap;
+          import java.util.LinkedHashMap;
+          import java.util.Locale;
+          import java.util.Map;
+          import java.util.concurrent.ConcurrentHashMap;
+          import java.util.concurrent.Executors;
+          import java.util.concurrent.ScheduledExecutorService;
+          import java.util.concurrent.TimeUnit;
+
+          /**
+           * Sinkronisasi pilihan cape antar anggota tim lewat topic ntfy (tanpa server sendiri).
+           * Yang dikirim cuma: username + NAMA FILE cape. Gambarnya diambil dari folder masing-masing pemain,
+           * jadi semua anggota harus punya file gambar dengan nama yang sama.
+           */
+          public final class CapeSync {
+              private CapeSync() {}
+
+              private static final Map<String, String> REMOTE = new ConcurrentHashMap<>();
+              private static ScheduledExecutorService ex;
+              private static volatile long lastPublish = 0;
+              private static volatile boolean forcePublish = true;
+
+              public static volatile String selfName = null;
+
+              public static void start() {
+                  ex = Executors.newSingleThreadScheduledExecutor(r -> {
+                      Thread t = new Thread(r, "teamcape-sync");
+                      t.setDaemon(true);
+                      return t;
+                  });
+                  ex.scheduleWithFixedDelay(CapeSync::tick, 8, 25, TimeUnit.SECONDS);
+              }
+
+              public static void publishNow() {
+                  forcePublish = true;
+                  if (ex != null) ex.schedule(CapeSync::tick, 2, TimeUnit.SECONDS);
+              }
+
+              /** Cape milik pemain lain (null = tidak ada / off). */
+              public static String remote(String playerName) {
+                  if (playerName == null) return null;
+                  String c = REMOTE.get(playerName.toLowerCase(Locale.ROOT));
+                  if (c == null || "-".equals(c)) return null;
+                  return c;
+              }
+
+              public static Map<String, String> snapshot() {
+                  return new LinkedHashMap<>(REMOTE);
+              }
+
+              private static boolean topicOk() {
+                  String t = CapeConfig.topic();
+                  return t != null && t.matches("[A-Za-z0-9_-]{1,64}") && !t.startsWith("__");
+              }
+
+              private static void tick() {
+                  try {
+                      MinecraftClient mc = MinecraftClient.getInstance();
+                      if (mc.world == null || mc.player == null) return;
+                      if (!topicOk()) return;
+                      long now = System.currentTimeMillis();
+                      if (selfName != null && (forcePublish || now - lastPublish > 20L * 60 * 1000)) {
+                          forcePublish = false;
+                          publish();
+                          lastPublish = now;
+                      }
+                      poll();
+                  } catch (Throwable t) {
+                      TeamCapeMod.LOG.debug("sync gagal: {}", t.toString());
+                  }
+              }
+
+              private static String base() {
+                  return CapeConfig.server() + "/" + CapeConfig.topic();
+              }
+
+              private static HttpURLConnection open(String url) throws Exception {
+                  HttpURLConnection c = (HttpURLConnection) URI.create(url).toURL().openConnection();
+                  c.setConnectTimeout(8000);
+                  c.setReadTimeout(12000);
+                  c.setRequestProperty("User-Agent", "teamcape-mod");
+                  return c;
+              }
+
+              private static void drain(HttpURLConnection c) {
+                  try (InputStream in = c.getInputStream()) {
+                      in.readAllBytes();
+                  } catch (Exception ignored) {
+                  }
+              }
+
+              private static void publish() throws Exception {
+                  String cape = (CapeConfig.enabled && CapeConfig.selected != null && !CapeConfig.selected.isEmpty())
+                      ? CapeConfig.selected : "-";
+                  JsonObject o = new JsonObject();
+                  o.addProperty("u", selfName);
+                  o.addProperty("c", cape);
+                  byte[] body = o.toString().getBytes(StandardCharsets.UTF_8);
+                  HttpURLConnection c = open(base());
+                  try {
+                      c.setRequestMethod("POST");
+                      c.setDoOutput(true);
+                      c.setRequestProperty("Content-Type", "text/plain; charset=utf-8");
+                      c.setFixedLengthStreamingMode(body.length);
+                      try (OutputStream os = c.getOutputStream()) {
+                          os.write(body);
+                      }
+                      c.getResponseCode();
+                      drain(c);
+                  } finally {
+                      c.disconnect();
+                  }
+              }
+
+              private static String str(JsonObject o, String k) {
+                  if (o == null || !o.has(k) || !o.get(k).isJsonPrimitive()) return null;
+                  return o.get(k).getAsString();
+              }
+
+              private static void poll() throws Exception {
+                  HttpURLConnection c = open(base() + "/json?poll=1&since=12h");
+                  try {
+                      if (c.getResponseCode() != 200) return;
+                      Map<String, Long> times = new HashMap<>();
+                      Map<String, String> latest = new HashMap<>();
+                      try (BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8))) {
+                          String line;
+                          int n = 0;
+                          while ((line = r.readLine()) != null && n++ < 5000) {
+                              try {
+                                  JsonObject o = JsonParser.parseString(line).getAsJsonObject();
+                                  if (!"message".equals(str(o, "event"))) continue;
+                                  long t = o.has("time") ? o.get("time").getAsLong() : 0L;
+                                  String msg = str(o, "message");
+                                  if (msg == null) continue;
+                                  JsonObject m = JsonParser.parseString(msg).getAsJsonObject();
+                                  String u = str(m, "u");
+                                  String cp = str(m, "c");
+                                  if (u == null || cp == null || u.length() > 32) continue;
+                                  if (!"-".equals(cp) && !CapeFiles.safeName(cp)) continue;
+                                  String key = u.toLowerCase(Locale.ROOT);
+                                  Long prev = times.get(key);
+                                  if (prev == null || t >= prev) {
+                                      times.put(key, t);
+                                      latest.put(key, cp);
+                                  }
+                              } catch (Exception ignored) {
+                              }
+                          }
+                      }
+                      REMOTE.putAll(latest);
+                  } finally {
+                      c.disconnect();
+                  }
+              }
+          }
+          EOF_9
+          cat > src/main/java/com/teamcape/CapeManager.java <<'EOF_10'
+          package com.teamcape;
+
+          import net.minecraft.client.MinecraftClient;
+          import net.minecraft.client.network.AbstractClientPlayerEntity;
+          import net.minecraft.entity.player.SkinTextures;
+
+          public final class CapeManager {
+              private CapeManager() {}
+
+              private static String fileFor(AbstractClientPlayerEntity p) {
+                  MinecraftClient mc = MinecraftClient.getInstance();
+                  if (p == mc.player) {
+                      if (!CapeConfig.enabled) return null;
+                      String s = CapeConfig.selected;
+                      return (s == null || s.isEmpty()) ? null : s;
+                  }
+                  if (!CapeConfig.showOthers) return null;
+                  return CapeSync.remote(p.getName().getString());
+              }
+
+              /** Dipanggil dari mixin. Return null kalau skin asli tidak perlu diubah. */
+              public static SkinTextures apply(AbstractClientPlayerEntity p, SkinTextures orig) {
+                  if (orig == null) return null;
+                  String file = fileFor(p);
+                  if (file == null) return null;
+                  CapeTextures.Entry e = CapeTextures.get(file);
+                  if (e == null || !e.valid || e.asset == null) return null;
+                  return new SkinTextures(orig.body(), e.asset, orig.elytra(), orig.model(), orig.secure());
+              }
+          }
+          EOF_10
+          cat > src/main/java/com/teamcape/CapeMenuScreen.java <<'EOF_11'
+          package com.teamcape;
+
+          import net.minecraft.client.gl.RenderPipelines;
+          import net.minecraft.client.gui.DrawContext;
+          import net.minecraft.client.gui.screen.Screen;
+          import net.minecraft.client.gui.widget.ButtonWidget;
+          import net.minecraft.text.Text;
+          import net.minecraft.util.Formatting;
+
+          import java.util.ArrayList;
+          import java.util.List;
+
+          public class CapeMenuScreen extends Screen {
+              public static volatile boolean openRequested = false;
+
+              private static final int ROW_H = 24;
+              private static final int LIST_TOP = 60;
+
+              private final Screen parent;
+              private List<String> files = new ArrayList<>();
+              private int page = 0;
+              private int perPage = 3;
+              private String status = "";
+
+              public CapeMenuScreen(Screen parent) {
+                  super(Text.literal("Team Cape"));
+                  this.parent = parent;
+              }
+
+              @Override
+              protected void init() {
+                  CapeFiles.refresh();
+                  files = new ArrayList<>(CapeFiles.list());
+                  build();
+              }
+
+              private Text toggleLabel() {
+                  return Text.literal("Cape kamu: " + (CapeConfig.enabled ? "ON" : "OFF"))
+                      .formatted(CapeConfig.enabled ? Formatting.GREEN : Formatting.RED);
+              }
+
+              private static String shorten(String s) {
+                  return s.length() <= 24 ? s : s.substring(0, 21) + "...";
+              }
+
+              private void build() {
+                  this.clearChildren();
+                  int cx = this.width / 2;
+                  perPage = Math.max(1, (this.height - 44 - LIST_TOP) / ROW_H);
+                  int pages = Math.max(1, (files.size() + perPage - 1) / perPage);
+                  if (page >= pages) page = pages - 1;
+                  if (page < 0) page = 0;
+
+                  this.addDrawableChild(ButtonWidget.builder(toggleLabel(), b -> {
+                      CapeConfig.enabled = !CapeConfig.enabled;
+                      CapeConfig.save();
+                      CapeSync.publishNow();
+                      b.setMessage(toggleLabel());
+                  }).dimensions(cx - 70, 22, 140, 20).build());
+
+                  int listLeft = cx - 150;
+                  int start = page * perPage;
+                  for (int i = 0; i < perPage && start + i < files.size(); i++) {
+                      final String name = files.get(start + i);
+                      int y = LIST_TOP + i * ROW_H;
+                      boolean sel = name.equalsIgnoreCase(CapeConfig.selected);
+                      Text label = Text.literal(shorten(name)).formatted(sel ? Formatting.GREEN : Formatting.WHITE);
+                      this.addDrawableChild(ButtonWidget.builder(label, b -> chooseCape(name))
+                          .dimensions(listLeft + 18, y, 170, 20).build());
+                  }
+
+                  int by = this.height - 28;
+                  int bw = Math.max(40, Math.min(70, (this.width - 24) / 4 - 4));
+                  int total = bw * 4 + 12;
+                  int bx = cx - total / 2;
+
+                  ButtonWidget prev = ButtonWidget.builder(Text.literal("< Prev"), b -> {
+                      page--;
+                      build();
+                  }).dimensions(bx, by, bw, 20).build();
+                  prev.active = page > 0;
+                  this.addDrawableChild(prev);
+
+                  ButtonWidget next = ButtonWidget.builder(Text.literal("Next >"), b -> {
+                      page++;
+                      build();
+                  }).dimensions(bx + bw + 4, by, bw, 20).build();
+                  next.active = page < pages - 1;
+                  this.addDrawableChild(next);
+
+                  this.addDrawableChild(ButtonWidget.builder(Text.literal("Refresh"), b -> {
+                      CapeFiles.refresh();
+                      files = new ArrayList<>(CapeFiles.list());
+                      status = "Folder di-scan ulang: " + files.size() + " gambar";
+                      build();
+                  }).dimensions(bx + (bw + 4) * 2, by, bw, 20).build());
+
+                  this.addDrawableChild(ButtonWidget.builder(Text.literal("Tutup"), b -> this.close())
+                      .dimensions(bx + (bw + 4) * 3, by, bw, 20).build());
+              }
+
+              private void chooseCape(String name) {
+                  CapeTextures.Entry e = CapeTextures.get(name);
+                  if (e == null || !e.valid) {
+                      status = "Gambar tidak valid: " + (e == null ? "tidak terbaca" : e.problem);
+                      return;
+                  }
+                  CapeConfig.selected = name;
+                  CapeConfig.enabled = true;
+                  CapeConfig.save();
+                  CapeSync.publishNow();
+                  status = "Dipakai: " + name;
+                  build();
+              }
+
+              private void drawCapeFace(DrawContext ctx, CapeTextures.Entry e, int x, int y, int w, int h) {
+                  ctx.fill(x - 1, y - 1, x + w + 1, y + h + 1, 0xFF303030);
+                  if (e == null || !e.valid) {
+                      ctx.drawTextWithShadow(this.textRenderer, "!", x + w / 2 - 2, y + h / 2 - 4, 0xFFFF5555);
+                      return;
+                  }
+                  int s = e.width / 64;
+                  ctx.drawTexture(RenderPipelines.GUI_TEXTURED, e.id, x, y, (float) s, (float) s, w, h, 10 * s, 16 * s, e.width, e.height);
+              }
+
+              @Override
+              public void render(DrawContext ctx, int mouseX, int mouseY, float delta) {
+                  super.render(ctx, mouseX, mouseY, delta);
+                  int cx = this.width / 2;
+                  int pages = Math.max(1, (files.size() + perPage - 1) / perPage);
+
+                  ctx.drawCenteredTextWithShadow(this.textRenderer, this.title, cx, 8, 0xFFFFFFFF);
+                  ctx.drawCenteredTextWithShadow(this.textRenderer,
+                      Text.literal("teamcape/capes  -  hal " + (page + 1) + "/" + pages), cx, 46, 0xFFAAAAAA);
+
+                  if (files.isEmpty()) {
+                      ctx.drawWrappedTextWithShadow(this.textRenderer,
+                          Text.literal("Belum ada gambar. Taruh file .png cape di folder .minecraft/teamcape/capes lalu klik Refresh."),
+                          cx - 150, LIST_TOP, 300, 0xFFFFFF55);
+                  }
+
+                  int listLeft = cx - 150;
+                  int start = page * perPage;
+                  for (int i = 0; i < perPage && start + i < files.size(); i++) {
+                      String name = files.get(start + i);
+                      drawCapeFace(ctx, CapeTextures.get(name), listLeft, LIST_TOP + i * ROW_H, 12, 20);
+                  }
+
+                  if (this.width >= 300) {
+                      int ph = Math.min(96, this.height - 44 - LIST_TOP - 12);
+                      if (ph >= 32) {
+                          int pw = ph * 5 / 8;
+                          String sel = CapeConfig.selected;
+                          CapeTextures.Entry e = (sel == null || sel.isEmpty()) ? null : CapeTextures.get(sel);
+                          drawCapeFace(ctx, e, cx + 80, LIST_TOP, pw, ph);
+                      }
+                  }
+
+                  if (!status.isEmpty()) {
+                      ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal(status), cx, this.height - 40, 0xFFFFFF55);
+                  }
+              }
+
+              @Override
+              public void close() {
+                  if (this.client != null) this.client.setScreen(parent);
+              }
+          }
+          EOF_11
+          cat > src/main/java/com/teamcape/mixin/AbstractClientPlayerEntityMixin.java <<'EOF_12'
+          package com.teamcape.mixin;
+
+          import com.teamcape.CapeManager;
+          import net.minecraft.client.network.AbstractClientPlayerEntity;
+          import net.minecraft.entity.player.SkinTextures;
+          import org.spongepowered.asm.mixin.Mixin;
+          import org.spongepowered.asm.mixin.injection.At;
+          import org.spongepowered.asm.mixin.injection.Inject;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+
+          @Mixin(AbstractClientPlayerEntity.class)
+          public abstract class AbstractClientPlayerEntityMixin {
+              @Inject(method = "getSkin", at = @At("RETURN"), cancellable = true)
+              private void teamcape$getSkin(CallbackInfoReturnable<SkinTextures> cir) {
+                  SkinTextures custom = CapeManager.apply((AbstractClientPlayerEntity) (Object) this, cir.getReturnValue());
+                  if (custom != null) {
+                      cir.setReturnValue(custom);
+                  }
+              }
+          }
+          EOF_12
+
+      - name: Pasang TEAM_TOPIC
+        run: |
+          [[ "$TEAM_TOPIC" =~ ^[A-Za-z0-9_-]{8,64}$ ]] || { echo "TEAM_TOPIC harus 8-64 karakter: huruf, angka, _ atau -"; exit 1; }
+          sed -i "s/__TEAM_TOPIC__/${TEAM_TOPIC}/" src/main/java/com/teamcape/TeamCapeMod.java
+          grep -n "DEFAULT_TOPIC" src/main/java/com/teamcape/TeamCapeMod.java
+
+      - name: Build
+        run: gradle build --no-daemon --stacktrace
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: TeamCape build ${{ github.run_number }}
+          files: build/libs/*.jar
